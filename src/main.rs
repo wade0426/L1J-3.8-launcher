@@ -5,6 +5,7 @@
 
 #![windows_subsystem = "windows"]
 
+#[path = "assist/mod.rs"]
 mod aux;
 mod config;
 mod dpi_override;
