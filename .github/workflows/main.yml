@@ -16,17 +16,26 @@ jobs:
       - name: Install Rust MSVC
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: |
+            x86_64-pc-windows-msvc
+            i686-pc-windows-msvc
+
+      - name: Build IME overlay DLL
+        shell: pwsh
+        run: |
+          cd ime_overlay
+          cargo build --release --target i686-pc-windows-msvc
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Prepare package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist
-          Copy-Item target\release\launcher.exe dist\
-          Copy-Item target\release\encoder.exe dist\
+
+          Copy-Item target\x86_64-pc-windows-msvc\release\launcher.exe dist\launcher.exe
+          Copy-Item target\x86_64-pc-windows-msvc\release\encoder.exe dist\encoder.exe
 
           if (Test-Path skins) {
             Copy-Item skins dist\skins -Recurse
