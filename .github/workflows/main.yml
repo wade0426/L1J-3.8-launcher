@@ -3,56 +3,293 @@ name: Build Windows Release
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # 靜態連結 MSVC CRT，降低玩家端缺 VC++ Runtime 或載錯 CRT DLL 的機率
+  RUSTFLAGS: "-C target-feature=+crt-static"
 
 jobs:
   build:
     runs-on: windows-latest
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust MSVC
+      - name: Install Rust MSVC targets
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: |
             x86_64-pc-windows-msvc
             i686-pc-windows-msvc
 
-      - name: Build IME overlay DLL
-        shell: pwsh
+      - name: Show Rust toolchain
         run: |
-          cd ime_overlay
-          cargo build --release --target i686-pc-windows-msvc
+          rustc -Vv
+          cargo -V
+          rustup show
 
-      - name: Build release
-        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Build IME overlay DLL 32-bit
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (Test-Path "ime_overlay\Cargo.toml") {
+            cargo build `
+              --manifest-path ime_overlay\Cargo.toml `
+              --release `
+              --target i686-pc-windows-msvc
+          } else {
+            Write-Warning "ime_overlay\Cargo.toml not found, skip IME overlay build."
+          }
+
+      - name: Build launcher and encoder x64
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          cargo build `
+            --locked `
+            --release `
+            --target x86_64-pc-windows-msvc
+
+      - name: Download WebView2Loader x64
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force "vendor\webview2" | Out-Null
+
+          $index = Invoke-RestMethod "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/index.json"
+          $version = $index.versions[-1]
+
+          Write-Host "Using Microsoft.Web.WebView2 NuGet version: $version"
+
+          $nupkgUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/$version/microsoft.web.webview2.$version.nupkg"
+          $nupkgPath = "vendor\webview2\Microsoft.Web.WebView2.$version.nupkg"
+          $zipPath = "vendor\webview2\Microsoft.Web.WebView2.$version.zip"
+          $extractPath = "vendor\webview2\pkg"
+
+          Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath
+          Copy-Item $nupkgPath $zipPath -Force
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+          $loader = Join-Path $extractPath "build\native\x64\WebView2Loader.dll"
+
+          if (!(Test-Path $loader)) {
+            throw "x64 WebView2Loader.dll not found in NuGet package."
+          }
+
+          Write-Host "Found WebView2Loader.dll:"
+          Get-Item $loader | Format-List FullName, Length
 
       - name: Prepare package
-        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist
+          $ErrorActionPreference = "Stop"
 
-          Copy-Item target\x86_64-pc-windows-msvc\release\launcher.exe dist\launcher.exe
-          Copy-Item target\x86_64-pc-windows-msvc\release\encoder.exe dist\encoder.exe
+          $dist = "dist"
 
-          if (Test-Path skins) {
-            Copy-Item skins dist\skins -Recurse
+          if (Test-Path $dist) {
+            Remove-Item $dist -Recurse -Force
           }
 
-          if (Test-Path assets) {
-            Copy-Item assets dist\assets -Recurse
+          New-Item -ItemType Directory -Force $dist | Out-Null
+
+          Copy-Item `
+            "target\x86_64-pc-windows-msvc\release\launcher.exe" `
+            "$dist\launcher.exe" `
+            -Force
+
+          Copy-Item `
+            "target\x86_64-pc-windows-msvc\release\encoder.exe" `
+            "$dist\encoder.exe" `
+            -Force
+
+          Copy-Item `
+            "vendor\webview2\pkg\build\native\x64\WebView2Loader.dll" `
+            "$dist\WebView2Loader.dll" `
+            -Force
+
+          # 32-bit IME overlay DLL：給 32-bit 遊戲用，不是給 launcher.exe 載入
+          $imeDll = Get-ChildItem `
+            -Path "ime_overlay\target\i686-pc-windows-msvc\release" `
+            -Filter "*.dll" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($imeDll) {
+            Copy-Item $imeDll.FullName "$dist\$($imeDll.Name)" -Force
+            Write-Host "Copied IME overlay DLL: $($imeDll.Name)"
+          } else {
+            Write-Warning "IME overlay DLL not found."
           }
 
-          if (Test-Path README.md) {
-            Copy-Item README.md dist\
+          if (Test-Path "assets") {
+            Copy-Item "assets" "$dist\assets" -Recurse -Force
+          } else {
+            Write-Warning "assets folder not found."
           }
 
-          Compress-Archive -Path dist\* -DestinationPath L1J-3.8-launcher-windows-x64.zip -Force
+          if (Test-Path "skins") {
+            Copy-Item "skins" "$dist\skins" -Recurse -Force
+          } else {
+            Write-Warning "skins folder not found. Creating minimal diagnostic skin."
+
+            New-Item -ItemType Directory -Force "$dist\skins\default" | Out-Null
+
+            @'
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>L1J 3.8 Launcher</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="box">
+    <h1>L1J 3.8 Launcher</h1>
+    <p>Minimal diagnostic skin loaded.</p>
+    <p>請將正式的 skins/default/index.html、style.css、JavaScript 檔案放進 repo。</p>
+  </main>
+</body>
+</html>
+'@ | Set-Content -Path "$dist\skins\default\index.html" -Encoding UTF8
+
+            @'
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #111;
+  color: #eee;
+  font-family: "Microsoft JhengHei", "Segoe UI", sans-serif;
+}
+
+.box {
+  padding: 32px;
+}
+
+h1 {
+  margin-top: 0;
+}
+'@ | Set-Content -Path "$dist\skins\default\style.css" -Encoding UTF8
+          }
+
+          if (Test-Path "README.md") {
+            Copy-Item "README.md" "$dist\README.md" -Force
+          }
+
+          if (Test-Path "list.txt") {
+            Copy-Item "list.txt" "$dist\list.txt" -Force
+          }
+
+          if (Test-Path "TW13081901.txt") {
+            Copy-Item "TW13081901.txt" "$dist\TW13081901.txt" -Force
+          }
+
+          if (Test-Path "TW13081901.pak") {
+            Copy-Item "TW13081901.pak" "$dist\TW13081901.pak" -Force
+          }
+
+      - name: Verify PE architecture
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Get-PEMachine {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            $fs = [System.IO.File]::OpenRead($Path)
+            $br = New-Object System.IO.BinaryReader($fs)
+
+            try {
+              $fs.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+              $peOffset = $br.ReadInt32()
+
+              $fs.Seek($peOffset + 4, [System.IO.SeekOrigin]::Begin) | Out-Null
+              $machine = $br.ReadUInt16()
+
+              switch ($machine) {
+                0x014c { return "x86" }
+                0x8664 { return "x64" }
+                0xaa64 { return "ARM64" }
+                default { return ("Unknown: 0x{0:X4}" -f $machine) }
+              }
+            }
+            finally {
+              $br.Close()
+              $fs.Close()
+            }
+          }
+
+          $files = Get-ChildItem "dist" -File -Recurse |
+            Where-Object { $_.Extension -in ".exe", ".dll" }
+
+          $result = foreach ($f in $files) {
+            [PSCustomObject]@{
+              File = $f.FullName.Replace((Resolve-Path "dist").Path + "\", "")
+              Arch = Get-PEMachine $f.FullName
+            }
+          }
+
+          $result | Format-Table -AutoSize
+
+          $launcherArch = Get-PEMachine "dist\launcher.exe"
+          $encoderArch = Get-PEMachine "dist\encoder.exe"
+          $webviewArch = Get-PEMachine "dist\WebView2Loader.dll"
+
+          if ($launcherArch -ne "x64") {
+            throw "launcher.exe must be x64, actual: $launcherArch"
+          }
+
+          if ($encoderArch -ne "x64") {
+            throw "encoder.exe must be x64, actual: $encoderArch"
+          }
+
+          if ($webviewArch -ne "x64") {
+            throw "WebView2Loader.dll must be x64, actual: $webviewArch"
+          }
+
+          $imeDll = Get-ChildItem "dist" -Filter "*.dll" -File |
+            Where-Object { $_.Name -ne "WebView2Loader.dll" } |
+            Select-Object -First 1
+
+          if ($imeDll) {
+            $imeArch = Get-PEMachine $imeDll.FullName
+
+            if ($imeArch -ne "x86") {
+              Write-Warning "$($imeDll.Name) expected x86 for 32-bit game injection, actual: $imeArch"
+            }
+          }
+
+      - name: Create zip
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $zip = "L1J-3.8-launcher-windows-x64.zip"
+
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+
+          Compress-Archive `
+            -Path "dist\*" `
+            -DestinationPath $zip `
+            -Force
+
+          Get-Item $zip | Format-List FullName, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: L1J-3.8-launcher-windows-x64
           path: L1J-3.8-launcher-windows-x64.zip
+          if-no-files-found: error
