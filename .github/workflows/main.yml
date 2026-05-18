@@ -39,6 +39,9 @@ jobs:
           cargo -V
           rustup show
 
+      - name: Clean
+        run: cargo clean
+
       - name: Build IME overlay DLL 32-bit
         run: |
           $ErrorActionPreference = "Stop"
