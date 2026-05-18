@@ -100,11 +100,15 @@ jobs:
 
           Copy-Item "vendor\webview2\pkg\build\native\x64\WebView2Loader.dll" "$dist\WebView2Loader.dll" -Force
 
+          # 重要：
+          # lineage_ime.dll 是 32-bit DLL，給 32-bit 遊戲用。
+          # 不要放在 launcher.exe 同層，避免 x64 launcher 載入到 x86 DLL 後 0xc000007b。
           $imeDll = Get-ChildItem -Path "ime_overlay\target\i686-pc-windows-msvc\release" -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
 
           if ($imeDll) {
-            Copy-Item $imeDll.FullName "$dist\$($imeDll.Name)" -Force
-            Write-Host "Copied IME overlay DLL: $($imeDll.Name)"
+            New-Item -ItemType Directory -Force "$dist\ime_overlay" | Out-Null
+            Copy-Item $imeDll.FullName "$dist\ime_overlay\$($imeDll.Name)" -Force
+            Write-Host "Copied 32-bit IME overlay DLL to ime_overlay folder: $($imeDll.Name)"
           } else {
             Write-Warning "IME overlay DLL not found."
           }
