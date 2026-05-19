@@ -1,0 +1,87 @@
+我查到的結論：**rdtc8822-debug 目前公開的 `L1J-3.8-launcher` 沒有提供正式 `skins` 檔案。**
+
+repo 根目錄目前只有 `assets`、`ime_overlay`、`src`、`Cargo.*`、README 等項目，**沒有 `skins/` 資料夾**；我直接嘗試開 `tree/main/skins` 也是 404。
+
+README 只是說部署時需要你自己把這些檔案放在遊戲目錄下：
+
+```text
+skins/
+└── default/
+    ├── index.html
+    ├── style.css
+    └── ...
+```
+
+而 GUI 模式會讀 `skins/<active>/index.html`。
+
+另外 repo 頁面顯示 **No releases published**，所以也沒有看到作者另外用 Release 附上完整打包版 skin。
+
+所以你的問題答案是：
+
+> **skins 檔案要去哪裡獲取？**
+> 目前看起來沒有公開來源。需要向 rdtc8822-debug 作者索取、找原本發布包、或自己重做一套。
+
+> **rdtc8822-debug 是否有提供 skins？**
+> 以目前公開 GitHub repo 來看：**沒有提供正式 skins，只在 README 說需要存在這個目錄。**
+
+你可以自己做 skin，因為 Rust 端其實已經定義好 WebView2 的前後端介面。前端 JS 需要用 `window.chrome.webview.postMessage(JSON)` 傳訊息給 Rust，Rust 端支援 `ready`、`launch`、`saveprefs`、`cancel`、`drag`、`openurl` 這些訊息；Rust 也會呼叫前端的 `window.lineage.setServers()`、`setVersion()`、`setPrefs()`、`setProgress()`、`setStatus()` 等函式。
+
+最小可用的正式 skin 架構應該是：
+
+```text
+skins/
+└── default/
+    ├── index.html
+    ├── style.css
+    └── launcher.js
+```
+
+`launcher.js` 至少要做這幾件事：
+
+```js
+function send(msg) {
+  window.chrome.webview.postMessage(JSON.stringify(msg));
+}
+
+window.lineage = {
+  setServers(list) {
+    console.log("servers", list);
+    // TODO: 渲染伺服器清單
+  },
+  setVersion(version) {
+    console.log("version", version);
+  },
+  setPrefs(prefs) {
+    console.log("prefs", prefs);
+  },
+  setServerStatus(index, online) {
+    console.log("server status", index, online);
+  },
+  setProgress(current, total) {
+    console.log("progress", current, total);
+  },
+  setLocked(locked) {
+    console.log("locked", locked);
+  },
+  setStatus(text) {
+    console.log("status", text);
+  }
+};
+
+window.addEventListener("DOMContentLoaded", () => {
+  send({ type: "ready" });
+});
+```
+
+啟動遊戲時送：
+
+```js
+send({
+  type: "launch",
+  serverIdx: 0,
+  windowed: true,
+  windowMode: 5
+});
+```
+
+重點是：**你現在缺的不是「下載 WebView2」或「編譯錯誤」，而是這個 repo 沒把正式前端 UI 一起開源出來。** 最實際的處理方式是先做一套簡易 `skins/default`，讓它能列伺服器、選伺服器、送 `launch`，之後再美化 UI。
